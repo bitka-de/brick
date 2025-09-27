@@ -1,0 +1,202 @@
+# Brick Framework - .gitignore
+# =================================
+
+# ===== ENVIRONMENT & CONFIG =====
+.env
+.env.local
+.env.production
+.env.staging
+.env.backup
+.env.example.local
+
+# ===== DEPENDENCIES =====
+/vendor/
+/node_modules/
+composer.lock
+package-lock.json
+yarn.lock
+
+# ===== LOGS & CACHE =====
+/storage/logs/*.log
+/storage/cache/views/*
+/storage/cache/config/*
+/storage/cache/routes/*
+/storage/cache/*
+!/storage/cache/.gitkeep
+
+# Framework Cache
+/bootstrap/cache/*
+!/bootstrap/cache/.gitkeep
+
+# ===== STORAGE & UPLOADS =====
+/storage/app/*
+!/storage/app/.gitkeep
+!/storage/app/public/
+/storage/app/public/*
+!/storage/app/public/.gitkeep
+
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/storage/framework/testing/*
+!/storage/framework/.gitkeep
+!/storage/framework/cache/.gitkeep
+!/storage/framework/sessions/.gitkeep
+!/storage/framework/views/.gitkeep
+!/storage/framework/testing/.gitkeep
+
+# User uploads
+/public/uploads/*
+!/public/uploads/.gitkeep
+
+# ===== DATABASE =====
+*.sqlite
+*.sqlite3
+*.db
+/storage/database/*
+!/storage/database/.gitkeep
+
+# Database dumps
+*.sql
+*.dump
+
+# ===== DEVELOPMENT TOOLS =====
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# PhpStorm
+.phpstorm.meta.php
+_ide_helper.php
+_ide_helper_models.php
+
+# ===== TESTING =====
+/coverage/
+.phpunit.result.cache
+.phpunit.cache
+phpunit.xml
+.phpunit.xml
+
+# Testing databases
+database.testing.sqlite
+testing.db
+
+# ===== BUILD & COMPILED =====
+/public/build/
+/public/hot
+/public/storage
+/public/css/app.css
+/public/js/app.js
+
+# Mix/Webpack
+/public/mix-manifest.json
+mix-manifest.json
+
+# Asset compilation
+npm-debug.log
+yarn-error.log
+
+# ===== TEMPORARY FILES =====
+*.tmp
+*.temp
+*.log
+*.pid
+*.seed
+*.coverage
+*.nyc_output
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+*.lnk
+
+# Linux
+*~
+
+# ===== SECURITY & KEYS =====
+*.pem
+*.p12
+*.key
+*.crt
+*.cert
+/ssl/
+private/
+
+# SSH keys
+id_rsa
+id_rsa.pub
+known_hosts
+
+# ===== FRAMEWORK SPECIFIC =====
+
+# Brick Framework specific
+/storage/framework/compiled/*
+/storage/framework/routes/*
+/storage/framework/config/*
+
+# Documentation builds
+/docs/build/
+/_book/
+
+# ===== DEPLOYMENT =====
+.htaccess.backup
+.maintenance
+deployment.log
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Vagrant
+.vagrant/
+
+# ===== DEVELOPMENT SERVERS =====
+.php_cs.cache
+.php-cs-fixer.cache
+.psalm.cache
+
+# Laravel Valet
+.valet-link
+.valet-site
+
+# MAMP/XAMPP logs
+error.log
+access.log
+
+# ===== BACKUP FILES =====
+*.backup
+*.bak
+*.old
+*.orig
+
+# ===== PERFORMANCE & PROFILING =====
+*.profile
+*.prof
+xdebug.log
+profiler_*
+
+# ===== MISCELLANEOUS =====
+TODO.md
+NOTES.md
+scratch.php
+test.php
+debug.php
+
+# Generated documentation
+api-docs/
+phpdoc/

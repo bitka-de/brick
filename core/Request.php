@@ -247,7 +247,7 @@ final class Request
         // Request-Body intelligent parsen mit strenger JSON-Validation
         $requestBodyContent = file_get_contents('php://input') ?: '';
         $contentTypeHeader = strtolower($normalizedHeaders['Content-Type'] ?? '');
-        $primaryMediaType = trim(strtok($contentTypeHeader, ';'));
+        $primaryMediaType = trim((string)strtok($contentTypeHeader, ';'));
         $parsedJsonPayload = null;
         $formPostData = $_POST ?? [];
 

@@ -341,7 +341,18 @@ final class Router
 
         $next = function(Request $req, array $par) use ($handler): Response {
             // Handler akzeptiert (Request, array $params)
-            return $handler($req, $par);
+            $result = $handler($req, $par);
+            
+            // Auto-wrap result in Response if needed
+            if ($result instanceof Response) {
+                return $result;
+            } elseif (is_string($result)) {
+                return Response::html($result);
+            } elseif (is_array($result) || is_object($result)) {
+                return Response::json($result);
+            } else {
+                return Response::html((string)$result);
+            }
         };
 
         foreach ($stack as $mw) {

@@ -169,6 +169,10 @@ abstract class Controller
         $viewData = $data + ['request' => $this->request] + $this->flashContext();
         $viewResponse = View::make($template, $viewData);
 
+        if (!is_object($viewResponse)) {
+            $viewResponse = $this->response->html((string)$viewResponse);
+        }
+
         return $status !== 200 ? $viewResponse->withStatus($status) : $viewResponse;
     }
 
