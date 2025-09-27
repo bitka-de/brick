@@ -12,40 +12,51 @@ abstract class Controller
     protected ?FlashBag $flash = null;
     protected ?UrlGenerator $urls = null;
 
-    /** Performance-optimiert: Cache für Request-Body und Request-ID */
+    /** Performance-Optimierungen */
     private ?string $cachedRequestId = null;
     private ?array $cachedJsonBody = null;
+    private bool $debug = false;
 
-    public function __construct(Request $request, Response $response, ?FlashBag $flash = null, ?UrlGenerator $urls = null)
-    {
+    public function __construct(
+        Request $request,
+        Response $response,
+        ?FlashBag $flash = null,
+        ?UrlGenerator $urls = null
+    ) {
         $this->request  = $request;
         $this->response = $response;
         $this->flash    = $flash;
         $this->urls     = $urls;
+
+        $this->debug = (($_ENV['APP_DEBUG'] ?? false) || ($_ENV['APP_ENV'] ?? '') === 'development');
     }
 
     // ── Content Negotiation ─────────────────────────────────────────────────────
 
     protected function isApiRequest(): bool
     {
-        $acceptHeader = strtolower($this->getServerValue('HTTP_ACCEPT'));
-        $requestUri = $this->getServerValue('REQUEST_URI');
-        $contentType = strtolower($this->getServerValue('CONTENT_TYPE') ?: $this->getServerValue('HTTP_CONTENT_TYPE'));
+        $acceptHeader   = strtolower($this->getServerValue('HTTP_ACCEPT'));
+        $requestUri     = $this->getServerValue('REQUEST_URI');
+        $contentType    = strtolower($this->getServerValue('CONTENT_TYPE') ?: $this->getServerValue('HTTP_CONTENT_TYPE'));
         $xmlHttpRequest = strtolower($this->getServerValue('HTTP_X_REQUESTED_WITH'));
 
         if (str_starts_with($requestUri, '/api/') || str_contains($requestUri, '/api/')) {
             return true;
         }
-        if (str_contains($contentType, 'application/json') || str_contains($acceptHeader, 'application/vnd.api+json')) {
+        if (
+            str_contains($contentType, 'application/json') ||
+            str_contains($acceptHeader, 'application/vnd.api+json') ||
+            str_contains($acceptHeader, '+json') // z. B. application/problem+json
+        ) {
             return true;
         }
         if ($xmlHttpRequest === 'xmlhttprequest') {
             return true;
         }
 
-        // Einfache q-weighted Prüfung, ohne volle RFC-Parser-Komplexität
-        $bestContentType = $this->negotiateBestContentType($acceptHeader, ['application/json', 'text/html']);
-        return $bestContentType === 'application/json';
+        // Einfache q-weighted Prüfung, ohne volle RFC-Komplexität
+        $best = $this->negotiateBestContentType($acceptHeader, ['application/json', 'text/html']);
+        return $best === 'application/json';
     }
 
     protected function wantsJson(): bool
@@ -53,28 +64,41 @@ abstract class Controller
         return $this->isApiRequest();
     }
 
+    protected function acceptsJson(): bool
+    {
+        return $this->isApiRequest();
+    }
+
+    protected function acceptsHtml(): bool
+    {
+        return !$this->isApiRequest();
+    }
+
     private function negotiateBestContentType(string $acceptHeader, array $availableContentTypes): string
     {
         // Beispiel: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
         $acceptHeaderParts = array_map('trim', explode(',', $acceptHeader));
-        $qualityScores = [];
-        
-        foreach ($acceptHeaderParts as $acceptPart) {
-            [$mediaType, $qualityValue] = array_pad(explode(';q=', $acceptPart), 2, '1.0');
+        $contentTypeScores = [];
+
+        foreach ($acceptHeaderParts as $acceptHeaderPart) {
+            [$mediaType, $qualityPart] = array_pad(explode(';q=', $acceptHeaderPart, 2), 2, '1.0');
             $mediaType = trim($mediaType);
-            $qualityValue = (float)$qualityValue;
-            
-            foreach ($availableContentTypes as $candidateType) {
-                if ($mediaType === $candidateType || $mediaType === '*/*') {
-                    $qualityScores[$candidateType] = max($qualityScores[$candidateType] ?? 0.0, $qualityValue);
-                } elseif (str_ends_with($mediaType, '/*') && str_starts_with($candidateType, substr($mediaType, 0, strpos($mediaType, '/')))) {
-                    $qualityScores[$candidateType] = max($qualityScores[$candidateType] ?? 0.0, $qualityValue);
+            $qualityValue = (float) trim($qualityPart);
+
+            foreach ($availableContentTypes as $candidateContentType) {
+                if ($mediaType === $candidateContentType || $mediaType === '*/*') {
+                    $contentTypeScores[$candidateContentType] = max($contentTypeScores[$candidateContentType] ?? 0.0, $qualityValue);
+                } elseif (str_ends_with($mediaType, '/*')) {
+                    $mediaTypePrefix = substr($mediaType, 0, (int)strpos($mediaType, '/'));
+                    if (str_starts_with($candidateContentType, $mediaTypePrefix . '/')) {
+                        $contentTypeScores[$candidateContentType] = max($contentTypeScores[$candidateContentType] ?? 0.0, $qualityValue);
+                    }
                 }
             }
         }
-        
-        arsort($qualityScores);
-        return array_key_first($qualityScores) ?: $availableContentTypes[0];
+
+        arsort($contentTypeScores);
+        return array_key_first($contentTypeScores) ?: $availableContentTypes[0];
     }
 
     protected function getHttpMethod(): string
@@ -92,41 +116,37 @@ abstract class Controller
 
     protected function getPage(int $defaultPage = 1): int
     {
-        $pageParameter = null;
         if (method_exists($this->request, 'get')) {
-            /** @var mixed $pageParameter */
-            $pageParameter = $this->request->{'get'}('page'); // Dynamischer Aufruf
+            /** @var mixed $page */
+            $page = $this->request->{'get'}('page');
         } else {
-            $pageParameter = $_GET['page'] ?? $_POST['page'] ?? null;
+            $page = $_GET['page'] ?? $_POST['page'] ?? null;
         }
-        return max(1, (int)($pageParameter ?? $defaultPage));
+        return max(1, (int)($page ?? $defaultPage));
     }
 
     protected function getPerPage(int $defaultItemsPerPage = 20, int $maxItemsPerPage = 100): int
     {
-        $perPageParameter = null;
-        $limitParameter = null;
-        
         if (method_exists($this->request, 'get')) {
-            /** @var mixed $perPageParameter */
-            $perPageParameter = $this->request->{'get'}('per_page');
-            /** @var mixed $limitParameter */
-            $limitParameter = $this->request->{'get'}('limit');
+            /** @var mixed $perPageValue */
+            $perPageValue = $this->request->{'get'}('per_page');
+            /** @var mixed $limitValue */
+            $limitValue = $this->request->{'get'}('limit');
         } else {
-            $perPageParameter = $_GET['per_page'] ?? $_POST['per_page'] ?? null;
-            $limitParameter = $_GET['limit'] ?? $_POST['limit'] ?? null;
+            $perPageValue = $_GET['per_page'] ?? $_POST['per_page'] ?? null;
+            $limitValue = $_GET['limit'] ?? $_POST['limit'] ?? null;
         }
-        
-        $requestedItemsPerPage = (int)($perPageParameter ?? $limitParameter ?? $defaultItemsPerPage);
+
+        $requestedItemsPerPage = (int)($perPageValue ?? $limitValue ?? $defaultItemsPerPage);
         return max(1, min($maxItemsPerPage, $requestedItemsPerPage));
     }
 
     // ── Flash ───────────────────────────────────────────────────────────────────
 
-    protected function flashSuccess(?string $msg = null): ?string    { return $msg ? $this->flash?->success($msg) : $this->flash?->pull('success'); }
-    protected function flashError(?string $msg = null): ?string      { return $msg ? $this->flash?->error($msg)   : $this->flash?->pull('error'); }
-    protected function flashWarning(?string $msg = null): ?string    { return $msg ? $this->flash?->warning($msg) : $this->flash?->pull('warning'); }
-    protected function flashInfo(?string $msg = null): ?string       { return $msg ? $this->flash?->info($msg)    : $this->flash?->pull('info'); }
+    protected function flashSuccess(?string $message = null): ?string { return $message ? $this->flash?->success($message) : $this->flash?->pull('success'); }
+    protected function flashError(?string $message = null): ?string   { return $message ? $this->flash?->error($message)   : $this->flash?->pull('error'); }
+    protected function flashWarning(?string $message = null): ?string { return $message ? $this->flash?->warning($message) : $this->flash?->pull('warning'); }
+    protected function flashInfo(?string $message = null): ?string    { return $message ? $this->flash?->info($message)    : $this->flash?->pull('info'); }
 
     protected function flashContext(): array
     {
@@ -145,16 +165,19 @@ abstract class Controller
         if ($this->wantsJson()) {
             return $this->apiError('HTML not acceptable for this endpoint.', 406);
         }
-        $payload = $data + ['request' => $this->request] + $this->flashContext();
-        $resp = View::make($template, $payload);
-        return $status !== 200 ? $resp->withStatus($status) : $resp;
+
+        $viewData = $data + ['request' => $this->request] + $this->flashContext();
+        $viewResponse = View::make($template, $viewData);
+
+        return $status !== 200 ? $viewResponse->withStatus($status) : $viewResponse;
     }
 
     protected function partial(string $template, array $data = [], int $status = 200): Response
     {
-        $html = View::renderPartial($template, $data + $this->flashContext());
-        $resp = $this->response->html($html);
-        return $status !== 200 ? $resp->withStatus($status) : $resp;
+        $partialHtml = View::renderPartial($template, $data + $this->flashContext());
+        $partialResponse = $this->response->html($partialHtml);
+
+        return $status !== 200 ? $partialResponse->withStatus($status) : $partialResponse;
     }
 
     // ── JSON ────────────────────────────────────────────────────────────────────
@@ -170,7 +193,7 @@ abstract class Controller
 
     protected function apiError(string $message, int $status = 400, array $details = []): Response
     {
-        $body = [
+        $errorResponseBody = [
             'success' => false,
             'error'   => [
                 'message' => $message,
@@ -179,12 +202,11 @@ abstract class Controller
             'meta'    => $this->baseMeta(),
         ];
 
-        $debug = (($_ENV['APP_DEBUG'] ?? false) || ($_ENV['APP_ENV'] ?? '') === 'development');
-        if ($debug && $details) {
-            $body['error']['details'] = $details;
+        if ($this->debug && $details) {
+            $errorResponseBody['error']['details'] = $details;
         }
 
-        return $this->response->json($body, $status);
+        return $this->response->json($errorResponseBody, $status);
     }
 
     protected function apiValidationError(array $errors): Response
@@ -199,14 +221,12 @@ abstract class Controller
 
     protected function baseMeta(): array
     {
-        $isDebugMode = (($_ENV['APP_DEBUG'] ?? false) || ($_ENV['APP_ENV'] ?? '') === 'development');
-
         return array_filter([
             'timestamp'  => time(),
             'request_id' => $this->getRequestId(),
             'method'     => $this->getHttpMethod(),
-            'path'       => $isDebugMode ? $this->getServerValue('REQUEST_URI') : null,
-        ], static fn($value) => $value !== null);
+            'path'       => $this->debug ? $this->getServerValue('REQUEST_URI') : null,
+        ], static fn($v) => $v !== null);
     }
 
     private function getRequestId(): string
@@ -214,18 +234,19 @@ abstract class Controller
         if ($this->cachedRequestId) {
             return $this->cachedRequestId;
         }
-        // Wenn dein Request bereits eine ID hat, benutze sie
+
         if (method_exists($this->request, 'id')) {
             try {
-                /** @var mixed $requestIdFromRequest */
-                $requestIdFromRequest = $this->request->{'id'}(); // Dynamischer Aufruf für Linter
-                if (is_string($requestIdFromRequest) && $requestIdFromRequest !== '') {
-                    return $this->cachedRequestId = $requestIdFromRequest;
+                /** @var mixed $requestIdValue */
+                $requestIdValue = $this->request->{'id'}();
+                if (is_string($requestIdValue) && $requestIdValue !== '') {
+                    return $this->cachedRequestId = $requestIdValue;
                 }
             } catch (\Throwable) {
-                // Fallback bei Fehlern
+                // Fallback
             }
         }
+
         return $this->cachedRequestId = bin2hex(random_bytes(8));
     }
 
@@ -238,44 +259,55 @@ abstract class Controller
 
     protected function back(string $fallbackUrl = '/'): Response
     {
-        $refererUrl = $this->getServerValue('HTTP_REFERER', $fallbackUrl);
-        return $this->redirect($refererUrl);
+        $referrerUrl = $this->getServerValue('HTTP_REFERER', $fallbackUrl);
+        return $this->redirect($referrerUrl);
     }
 
     protected function redirectToRoute(string $name, array $params = [], int $status = 302): Response
     {
-        $url = $this->urls?->route($name, $params)
+        $redirectUrl = $this->urls?->route($name, $params)
             ?? ('/' . ltrim($name, '/') . (empty($params) ? '' : '?' . http_build_query($params)));
-        return $this->redirect($url, $status);
+        return $this->redirect($redirectUrl, $status);
     }
 
     private function sanitizeRedirect(string $url): string
     {
-        // Verhindert Open Redirects: erlaube nur relative Pfade
-        if (preg_match('#^\s*(https?://|//)#i', $url)) {
+        // Header-Injection verhindern
+        $sanitizedUrl = str_replace(["\r", "\n"], '', $url);
+
+        // Open Redirects verhindern: nur relative Pfade zulassen
+        if (preg_match('#^\s*(https?://|//)#i', $sanitizedUrl)) {
             return '/';
         }
-        return $url === '' ? '/' : $url;
+        return $sanitizedUrl === '' ? '/' : $sanitizedUrl;
     }
 
-    protected function success(string $message, ?string $to = null, int $status = 302): Response
+    protected function success(string $message, ?string $destinationUrl = null, int $status = 302): Response
     {
         $this->flashSuccess($message);
-        return $to ? $this->redirect($to, $status) : $this->back();
+        return $destinationUrl ? $this->redirect($destinationUrl, $status) : $this->back();
     }
 
-    protected function error(string $message, ?string $to = null, int $status = 302): Response
+    protected function error(string $message, ?string $destinationUrl = null, int $status = 302): Response
     {
         $this->flashError($message);
-        return $to ? $this->redirect($to, $status) : $this->back();
+        return $destinationUrl ? $this->redirect($destinationUrl, $status) : $this->back();
     }
 
     // ── Validation ──────────────────────────────────────────────────────────────
 
+    /**
+     * Validiert Eingaben anhand einfacher Regeln.
+     * Beispiel:
+     * $data = $this->validateInput([
+     *   'name'  => 'required|string|min:2|max:50',
+     *   'email' => 'required|email',
+     *   'role'  => 'in:user,admin',
+     * ]);
+     */
     protected function validateInput(array $validationRules, ?array $inputData = null): array
     {
         $requestPayload = $inputData ?? $this->collectRequestPayloadOnce();
-
         $inputValidator = new SimpleValidator($validationRules, $requestPayload);
 
         if ($inputValidator->passes()) {
@@ -293,36 +325,33 @@ abstract class Controller
 
     private function collectRequestPayloadOnce(): array
     {
-        // Bevorzuge Request-Abstraktion falls verfügbar, sonst Fallback
+        // Bevorzugt die Request-Abstraktion
         $requestData = [];
         if (method_exists($this->request, 'all')) {
             try {
                 /** @var mixed $allRequestData */
-                $allRequestData = $this->request->{'all'}(); // Dynamischer Aufruf für Linter
+                $allRequestData = $this->request->{'all'}();
                 $requestData = is_array($allRequestData) ? $allRequestData : [];
             } catch (\Throwable) {
-                // Fallback auf $_GET + $_POST
                 $requestData = array_merge($_GET ?? [], $_POST ?? []);
             }
         } else {
-            // Direkter Fallback auf Superglobals
             $requestData = array_merge($_GET ?? [], $_POST ?? []);
         }
 
-        // JSON nur einmal lesen & mergen (ohne vorhandene Keys zu überschreiben)
+        // JSON-Body einmalig lesen & ergänzen (nicht überschreiben)
         if ($this->cachedJsonBody === null) {
             $this->cachedJsonBody = [];
-            $contentType = strtolower($this->getServerValue('CONTENT_TYPE') ?: $this->getServerValue('HTTP_CONTENT_TYPE'));
-            if (str_contains($contentType, 'application/json')) {
+            $contentTypeHeader = strtolower($this->getServerValue('CONTENT_TYPE') ?: $this->getServerValue('HTTP_CONTENT_TYPE'));
+            if (str_contains($contentTypeHeader, 'application/json')) {
                 $rawJsonInput = file_get_contents('php://input') ?: '';
-                $jsonData = json_decode($rawJsonInput, true);
-                if (is_array($jsonData)) {
-                    $this->cachedJsonBody = $jsonData;
+                $decodedJsonData = json_decode($rawJsonInput, true);
+                if (is_array($decodedJsonData)) {
+                    $this->cachedJsonBody = $decodedJsonData;
                 }
             }
         }
 
-        // JSON ergänzt Query/Form, ersetzt sie aber nicht
         foreach ($this->cachedJsonBody as $jsonKey => $jsonValue) {
             if (!array_key_exists($jsonKey, $requestData)) {
                 $requestData[$jsonKey] = $jsonValue;
@@ -356,109 +385,154 @@ final class PhpSessionStore implements SessionStore
             @session_start();
         }
     }
-    public function get(string $key, mixed $default = null): mixed { return $_SESSION[$key] ?? $default; }
-    public function put(string $key, mixed $value): void           { $_SESSION[$key] = $value; }
+
+    public function get(string $key, mixed $default = null): mixed
+    {
+        return $_SESSION[$key] ?? $default;
+    }
+
+    public function put(string $key, mixed $value): void
+    {
+        $_SESSION[$key] = $value;
+    }
+
     public function pull(string $key, mixed $default = null): mixed
     {
-        $val = $_SESSION[$key] ?? $default;
+        $sessionValue = $_SESSION[$key] ?? $default;
         unset($_SESSION[$key]);
-        return $val;
+        return $sessionValue;
     }
-    public function has(string $key): bool { return array_key_exists($key, $_SESSION); }
+
+    public function has(string $key): bool
+    {
+        return array_key_exists($key, $_SESSION);
+    }
 }
 
 final class FlashBag
 {
     public function __construct(private SessionStore $session) {}
 
-    public function set(string $type, string|array $message): void { $this->session->put("flash_{$type}", $message); }
+    public function set(string $type, string|array $message): void
+    {
+        $this->session->put("flash_{$type}", $message);
+    }
+
     public function add(string $type, string $message): void
     {
-        $key = "flash_{$type}";
-        $cur = $this->session->get($key, []);
-        $cur = is_array($cur) ? $cur : [$cur];
-        $cur[] = $message;
-        $this->session->put($key, $cur);
+        $flashKey = "flash_{$type}";
+        $currentMessages = $this->session->get($flashKey, []);
+        $currentMessages = is_array($currentMessages) ? $currentMessages : [$currentMessages];
+        $currentMessages[] = $message;
+        $this->session->put($flashKey, $currentMessages);
     }
-    public function peek(string $type): mixed { return $this->session->get("flash_{$type}"); }
-    public function pull(string $type): mixed { return $this->session->pull("flash_{$type}"); }
 
-    public function success(string $m): string { $this->set('success', $m); return $m; }
-    public function error(string $m): string   { $this->set('error',   $m); return $m; }
-    public function warning(string $m): string { $this->set('warning', $m); return $m; }
-    public function info(string $m): string    { $this->set('info',    $m); return $m; }
+    public function peek(string $type): mixed
+    {
+        return $this->session->get("flash_{$type}");
+    }
+
+    public function pull(string $type): mixed
+    {
+        return $this->session->pull("flash_{$type}");
+    }
+
+    public function success(string $message): string { $this->set('success', $message); return $message; }
+    public function error(string $message): string   { $this->set('error',   $message); return $message; }
+    public function warning(string $message): string { $this->set('warning', $message); return $message; }
+    public function info(string $message): string    { $this->set('info',    $message); return $message; }
 }
 
 /**
- * Minimal-Validator mit nützlichen Grundregeln.
+ * Minimal-Validator mit praxisnahen Regeln.
+ * Unterstützt: required, string, email, boolean, integer, array, min:N, max:N, in:a,b,c
  */
 final class SimpleValidator
 {
     /** @var array<string,string> */
-    private array $rules;
+    private array $validationRules;
     /** @var array<string,mixed> */
-    private array $data;
+    private array $inputData;
     /** @var array<string,string[]> */
-    private array $errors = [];
+    private array $validationErrors = [];
     /** @var array<string,string[]> */
     private static array $ruleCache = [];
 
-    public function __construct(array $rules, array $data)
+    /**
+     * @param array<string,string> $validationRules
+     * @param array<string,mixed>  $inputData
+     */
+    public function __construct(array $validationRules, array $inputData)
     {
-        $this->rules = $rules;
-        $this->data  = $data;
+        $this->validationRules = $validationRules;
+        $this->inputData = $inputData;
     }
 
     public function passes(): bool
     {
-        foreach ($this->rules as $field => $ruleStr) {
-            $value = $this->data[$field] ?? null;
-            foreach ($this->parse($ruleStr) as $rule) {
-                if ($rule === 'required' && ($value === null || $value === '')) {
-                    $this->push($field, 'is required');
-                } elseif ($rule === 'string' && $value !== null && !is_string($value)) {
-                    $this->push($field, 'must be a string');
-                } elseif ($rule === 'email' && $value !== null && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
-                    $this->push($field, 'must be a valid email');
-                } elseif ($rule === 'boolean' && $value !== null && !is_bool(filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE))) {
-                    $this->push($field, 'must be a boolean');
-                } elseif ($rule === 'integer' && $value !== null && filter_var($value, FILTER_VALIDATE_INT) === false) {
-                    $this->push($field, 'must be an integer');
-                } elseif ($rule === 'array' && $value !== null && !is_array($value)) {
-                    $this->push($field, 'must be an array');
-                } elseif (str_starts_with($rule, 'min:') && is_string($value)) {
-                    $min = (int)substr($rule, 4);
-                    if (mb_strlen($value) < $min) {
-                        $this->push($field, "must be at least {$min} characters");
+        foreach ($this->validationRules as $fieldName => $rulesString) {
+            $fieldValue = $this->inputData[$fieldName] ?? null;
+
+            foreach ($this->parseRules($rulesString) as $validationRule) {
+                if ($validationRule === 'required' && ($fieldValue === null || $fieldValue === '')) {
+                    $this->addValidationError($fieldName, 'is required');
+                } elseif ($validationRule === 'string' && $fieldValue !== null && !is_string($fieldValue)) {
+                    $this->addValidationError($fieldName, 'must be a string');
+                } elseif ($validationRule === 'email' && $fieldValue !== null && !filter_var($fieldValue, FILTER_VALIDATE_EMAIL)) {
+                    $this->addValidationError($fieldName, 'must be a valid email');
+                } elseif ($validationRule === 'boolean' && $fieldValue !== null && !is_bool(filter_var($fieldValue, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE))) {
+                    $this->addValidationError($fieldName, 'must be a boolean');
+                } elseif ($validationRule === 'integer' && $fieldValue !== null && filter_var($fieldValue, FILTER_VALIDATE_INT) === false) {
+                    $this->addValidationError($fieldName, 'must be an integer');
+                } elseif ($validationRule === 'array' && $fieldValue !== null && !is_array($fieldValue)) {
+                    $this->addValidationError($fieldName, 'must be an array');
+                } elseif (str_starts_with($validationRule, 'min:') && is_string($fieldValue)) {
+                    $minLength = (int)substr($validationRule, 4);
+                    if (mb_strlen($fieldValue) < $minLength) {
+                        $this->addValidationError($fieldName, "must be at least {$minLength} characters");
+                    }
+                } elseif (str_starts_with($validationRule, 'max:') && is_string($fieldValue)) {
+                    $maxLength = (int)substr($validationRule, 4);
+                    if (mb_strlen($fieldValue) > $maxLength) {
+                        $this->addValidationError($fieldName, "must be at most {$maxLength} characters");
+                    }
+                } elseif (str_starts_with($validationRule, 'in:')) {
+                    $allowedValues = array_map('trim', explode(',', substr($validationRule, 3)));
+                    if ($fieldValue !== null && !in_array((string)$fieldValue, $allowedValues, true)) {
+                        $this->addValidationError($fieldName, 'is not an allowed value');
                     }
                 }
             }
         }
-        return $this->errors === [];
+
+        return $this->validationErrors === [];
     }
 
     /** @return array<string,string[]> */
-    public function errors(): array { return $this->errors; }
+    public function errors(): array
+    {
+        return $this->validationErrors;
+    }
 
     /** @return array<string,mixed> */
     public function validated(): array
     {
-        $out = [];
-        foreach (array_keys($this->rules) as $k) {
-            if (array_key_exists($k, $this->data)) {
-                $out[$k] = $this->data[$k];
+        $validatedData = [];
+        foreach (array_keys($this->validationRules) as $fieldKey) {
+            if (array_key_exists($fieldKey, $this->inputData)) {
+                $validatedData[$fieldKey] = $this->inputData[$fieldKey];
             }
         }
-        return $out;
+        return $validatedData;
     }
 
-    private function push(string $field, string $message): void
+    private function addValidationError(string $fieldName, string $errorMessage): void
     {
-        $this->errors[$field][] = "{$field} {$message}";
+        $this->validationErrors[$fieldName][] = "{$fieldName} {$errorMessage}";
     }
 
     /** @return string[] */
-    private function parse(string $rulesString): array
+    private function parseRules(string $rulesString): array
     {
         return self::$ruleCache[$rulesString] ??= array_map('trim', explode('|', $rulesString));
     }
@@ -468,10 +542,16 @@ final class SimpleValidator
 
 final class RedirectHttpException extends \RuntimeException
 {
-    public function __construct(public readonly Response $response) { parent::__construct('Redirect'); }
+    public function __construct(public readonly Response $response)
+    {
+        parent::__construct('Redirect');
+    }
 }
 
 final class ValidationHttpException extends \RuntimeException
 {
-    public function __construct(public readonly Response $response) { parent::__construct('Validation failed'); }
+    public function __construct(public readonly Response $response)
+    {
+        parent::__construct('Validation failed');
+    }
 }
